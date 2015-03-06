@@ -70,12 +70,15 @@ os_bmfs_file_open:
 	mov byte [rsi], 1		; Set to open
 
 	; Reset the seek
-	mov rsi, os_filehandlers_seek
+	mov rsi, os_filehandlers_seek	; rsi <= os_filehandlers_seek (address of table)
 	shl rbx, 3			; Quick multiply by 8
-	add rsi, rbx
-	xor ebx, ebx			; SEEK_START
-	mov qword [rsi], rbx
+					; rbx = slot #
+					; rbx *= 8 to account for 64-bit seek lengths
+	add rsi, rbx			; rsi = os_filehandlers_seek + (rbx * 8)
+	xor rbx, rbx			; SEEK_START = 0L -- original: xor ebx, ebx
+	mov qword [rsi], rbx		; set the seek offset to SEEK_START (0x00000000)
 
+					; this part theoretically fixed ~phyrrus9
 	jmp os_bmfs_file_open_done
 
 os_bmfs_file_open_error:
@@ -118,6 +121,28 @@ os_bmfs_file_close_done:
 
 
 ; -----------------------------------------------------------------------------
+; os_bmfs_seek_update -- update the current seek on a file after IO
+; IN:	RAX = File I/O handler
+;	RCX = Number of blocks to increment by
+; OUT:	All registers preserved
+os_bmfs_seek_update:
+	push rsi
+	push rax
+	sub rax, 10			; get slot #
+	mov rsi, os_filehandlers_seek	; rsi <= os_filehandlers_seek (address of table)
+	shl rax, 3			; Quick multiply by 8
+					; rbx = slot #
+					; rbx *= 8 to account for 64-bit seek lengths
+	add rsi, rax			; rsi = os_filehandlers_seek + (rbx * 8)
+	mov qword rax, [rsi]		; get the current seek
+	add rax, rcx			; add the seek
+	mov qword [rsi], rax		; replace it in memory
+	pop rax
+	pop rsi
+	ret
+; ------------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
 ; os_bmfs_file_read -- Read a number of bytes from a file
 ; IN:	RAX = File I/O handler
 ;	RCX = Number of bytes to read (automatically rounded up to next 2MiB)
@@ -155,9 +180,23 @@ os_bmfs_file_read:
 	add rsi, 32			; Offset to starting block
 	lodsq				; Load starting block in RAX
 
-	; Add the current offset
-	; Currently always starting from start
+	; Add the current offset ~phyrrus9
+	; jmp os_bmfs_offset_added	; delete line to enable offset addition
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	push rsi
+	push rbx
 
+	mov rsi, os_filehandlers_seek	; rsi <= os_filehandlers_seek (address of table)
+	shl rbx, 3			; Quick multiply by 8
+					; rbx = slot #
+					; rbx *= 8 to account for 64-bit seek lengths
+	add rsi, rbx			; rsi = os_filehandlers_seek + (rbx * 8)
+	mov qword rbx, [rsi]		; get the seek offset
+	add rax, rbx			; add in the offset
+
+	pop rbx
+	pop rsi
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 	; Round up 'bytes to read' to the next 2MiB block
 	add rcx, 2097151		; 2MiB - 1 byte
 	shr rcx, 21			; Quick divide by 2097152
@@ -165,6 +204,7 @@ os_bmfs_file_read:
 	; Read the block(s)
 	xor edx, edx			; Drive 0
 	call os_bmfs_block_read
+	call os_bmfs_seek_update	; update the seek counter
 	jmp os_bmfs_file_read_done
 
 os_bmfs_file_read_error:
@@ -233,14 +273,30 @@ os_bmfs_file_write_done:
 
 
 ; -----------------------------------------------------------------------------
-; os_bmfs_file_seek -- Seek to position in a file
+; os_bmfs_file_seek -- Seek to block in a file
 ; IN:	RAX = File I/O handler
-;	RCX = Number of bytes to offset from origin
+;	RCX = Number of blocks to offset from origin
 ;	RDX = Origin
 ; OUT:	All registers preserved
 os_bmfs_file_seek:
-	; Is this an open file?
+	push rsi
+	push rax
+	push rdx
 
+	; Is this an open file?
+	; set the seek
+	sub rax, 10			; get slot #
+	mov rsi, os_filehandlers_seek	; rsi <= os_filehandlers_seek (address of table)
+	shl rax, 3			; Quick multiply by 8
+					; rbx = slot #
+					; rbx *= 8 to account for 64-bit seek lengths
+	add rsi, rax			; rsi = os_filehandlers_seek + (rbx * 8)
+	add rdx, rcx			; add the origin and offset block numbers
+	mov qword [rsi], rdx		; replace it in memory
+
+	pop rdx
+	pop rax
+	pop rsi
 	ret
 ; -----------------------------------------------------------------------------
 
